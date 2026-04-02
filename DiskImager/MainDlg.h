@@ -123,7 +123,7 @@ private:
 	void CopyText(const CString& strText);
 	bool IsSameDrive(TCHAR nVolume);
 	CString GetFullFilePath() const;
-	bool IsReatableFile() const;
+	bool IsReadableFile() const;
 	void HandleMessages();
 	void StartTimer();
 	void StopTimer();

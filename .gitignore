@@ -1,0 +1,19 @@
+# Claude Code
+CLAUDE.md
+.claude/
+
+# Build tools
+nuget.exe
+
+# Visual Studio
+Debug/
+Release/
+*.suo
+*.user
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+.vs/
+packages/

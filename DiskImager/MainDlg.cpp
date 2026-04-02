@@ -15,6 +15,7 @@
 #include <algorithm>
 #include "MainDlg.h"
 #include "disk.h"
+#include "Logger.h"
 
 CMainDlg::CMainDlg(LPCTSTR lpszFileLocation)
 	: m_bPartition(FALSE)
@@ -45,24 +46,18 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid)
 {
 	UINT num = 0;
 	UINT size = 0;
-	Gdiplus::ImageCodecInfo* pImageCodecInfo = NULL;
 	Gdiplus::GetImageEncodersSize(&num, &size);
-	if (size == 0) {
+	if (size == 0)
 		return -1;
-	}
-	pImageCodecInfo = (Gdiplus::ImageCodecInfo*)(malloc(size));
-	if (pImageCodecInfo == NULL) {
-		return -1;
-	}
+	std::vector<BYTE> buffer(size);
+	Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)buffer.data();
 	Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
 	for (UINT j = 0; j < num; ++j) {
 		if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
 			*pClsid = pImageCodecInfo[j].Clsid;
-			free(pImageCodecInfo);
 			return j;
 		}
 	}
-	free(pImageCodecInfo);
 	return -1;
 }
 
@@ -93,10 +88,12 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 
 	DoDataExchange(FALSE);
 
+	LOG("OnInitDialog: starting device enumeration");
 	m_wndDevice.ResetContent();
 	GetPhysicalDisks();
 	GetLogicalDrives();
 	InitDeviceList();
+	LOG("OnInitDialog: device enumeration complete, %zu disk(s), %d combo items", m_Disks.size(), m_wndDevice.GetCount());
 
 	m_Status = STATUS_IDLE;
 	m_wndProgress.SetPos(0);
@@ -176,7 +173,7 @@ static bool EndsWith(LPCTSTR lpszText, LPCTSTR lpszEnds)
 	size_t nEnds = _tcslen(lpszEnds);
 	if (nText < nEnds) return false;
 
-	return _tcscmp(lpszText - nEnds, lpszEnds) == 0;
+	return _tcscmp(lpszText + nText - nEnds, lpszEnds) == 0;
 }
 
 LRESULT CMainDlg::OnBrowseClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
@@ -226,18 +223,26 @@ LRESULT CMainDlg::OnBrowseClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 
 void CMainDlg::CopyText(const CString& strText)
 {
-	OpenClipboard();
+	if (!OpenClipboard())
+		return;
 	EmptyClipboard();
 	const size_t nSize = (strText.GetLength()+1) * sizeof(TCHAR);
 	HANDLE hGlobal = ::GlobalAlloc(GMEM_MOVEABLE, nSize);
 	if (hGlobal != NULL)
 	{
 		void* p = ::GlobalLock(hGlobal);
-		SecureHelper::memcpy_x(p, nSize, (LPCTSTR)strText, nSize);
-		::GlobalUnlock(hGlobal);
-		SetClipboardData(CF_UNICODETEXT, hGlobal);
-		CloseClipboard();
+		if (p != NULL)
+		{
+			SecureHelper::memcpy_x(p, nSize, (LPCTSTR)strText, nSize);
+			::GlobalUnlock(hGlobal);
+			SetClipboardData(CF_UNICODETEXT, hGlobal);
+		}
+		else
+		{
+			::GlobalFree(hGlobal);
+		}
 	}
+	CloseClipboard();
 }
 
 LRESULT CMainDlg::OnHashCopyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
@@ -262,6 +267,7 @@ LRESULT CMainDlg::OnHashGenerateClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl
 
 LRESULT CMainDlg::OnReadClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 {
+	LOG("OnReadClicked: begin");
 	CString strFullPath;
 	DoDataExchange(TRUE, IDC_IMAGEFILE);
 	CVolume Volume;
@@ -375,14 +381,7 @@ LRESULT CMainDlg::OnReadClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 			SetReadWriteButtonState();
 			return 0;
 		}
-		if (nSectors == 0ul)
-		{
-			m_wndProgress.SetRange32(0, 100);
-		}
-		else
-		{
-			m_wndProgress.SetRange32(0, (int)nSectors);
-		}
+		m_wndProgress.SetRange32(0, 10000);
 		lasti = 0ul;
 		m_UpdateTimer.start();
 		StartTimer();
@@ -410,10 +409,9 @@ LRESULT CMainDlg::OnReadClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 				mbpersec = (((double)m_SectorSize * (i - lasti)) * ((float)ONE_SEC_IN_MS / m_UpdateTimer.elapsed())) / 1024.0 / 1024.0;
 				UpdateSpeed(mbpersec);
 				UpdateElapsedTime(i, nSectors);
-				//elapsed_timer->update(i, numsectors);
 				lasti = i;
 			}
-			m_wndProgress.SetPos(i);
+			m_wndProgress.SetPos(nSectors ? (int)(i * 10000ull / nSectors) : 0);
 			HandleMessages();
 		}
 		m_wndProgress.SetPos(0);
@@ -445,13 +443,14 @@ LRESULT CMainDlg::OnReadClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 
 LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 {
+	LOG("OnWriteClicked: begin");
 	bool passfail = true;
 	DoDataExchange(TRUE, IDC_IMAGEFILE);
 	CVolume Volume;
 	CAtlFile File, RawDisk;
 	if (!m_strImageFile.IsEmpty())
 	{
-		if (IsReatableFile())
+		if (IsReadableFile())
 		{
 			if (IsSameDrive(m_strImageFile[0]))
 			{
@@ -485,7 +484,7 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 			HANDLE hDevice = INVALID_HANDLE_VALUE;
 
 			File=GetHandleOnFile(m_hWnd, m_strImageFile, GENERIC_READ);
-			if (File == NULL)
+			if (File == INVALID_HANDLE_VALUE)
 			{
 				m_Status = STATUS_IDLE;
 				UIEnable(IDCANCEL, FALSE);
@@ -507,8 +506,6 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 					return 0;
 				}
 				nAvailableSectors = GetDiskSectors(m_hWnd, RawDisk, &m_SectorSize);
-				if (LOWORD(dwDevice) == DEVICE_DRIVE)
-					nAvailableSectors = GetVolumeSectors(m_hWnd, HIWORD(dwDevice), &m_SectorSize);
 				if (!nAvailableSectors)
 				{
 					//For external card readers you may not get device change notification when you remove the card/flash.
@@ -521,7 +518,13 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 			}
 			else
 			{
-				nSectors = GetVolumeSectors(m_hWnd, HIWORD(dwDevice), &m_SectorSize);
+				nAvailableSectors = GetVolumeSectors(m_hWnd, HIWORD(dwDevice), &m_SectorSize);
+				if (!nAvailableSectors)
+				{
+					passfail = false;
+					m_Status = STATUS_IDLE;
+					return 0;
+				}
 				if (!volumes[0].Lock())
 				{
 					m_Status = STATUS_IDLE;
@@ -594,7 +597,7 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 				}
 			}
 
-			m_wndProgress.SetRange32(0, (nSectors == 0ul) ? 100 : (int)nSectors);
+			m_wndProgress.SetRange32(0, 10000);
 			lasti = 0ul;
 			m_UpdateTimer.start();
 			StartTimer();
@@ -625,7 +628,7 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 					UpdateElapsedTime(i, nSectors);
 					lasti = i;
 				}
-				m_wndProgress.SetPos(i);
+				m_wndProgress.SetPos(nSectors ? (int)(i * 10000ull / nSectors) : 0);
 				HandleMessages();
 			}
 			if (m_Status == STATUS_CANCELED) {
@@ -662,13 +665,14 @@ LRESULT CMainDlg::OnWriteClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 
 LRESULT CMainDlg::OnVerifyOnlyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 {
+	LOG("OnVerifyOnlyClicked: begin");
 	bool passfail = true;
 	DoDataExchange(TRUE, IDC_IMAGEFILE);
 	std::vector<char> DiskData; //for verify
 	CAtlFile File, RawDisk;
 	if (!m_strImageFile.IsEmpty())
 	{
-		if (IsReatableFile())
+		if (IsReadableFile())
 		{
 			if (IsSameDrive(m_strImageFile[0]))
 			{
@@ -790,7 +794,7 @@ LRESULT CMainDlg::OnVerifyOnlyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 					return 0;
 				}
 			}
-			m_wndProgress.SetRange32(0, (nSectors == 0ul) ? 100 : (int)nSectors);
+			m_wndProgress.SetRange32(0, 10000);
 			m_UpdateTimer.start();
 			StartTimer();
 			lasti = 0ul;
@@ -808,7 +812,7 @@ LRESULT CMainDlg::OnVerifyOnlyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 				if (DiskData.empty())
 				{
 					CString strMessage; 
-					strMessage.Format(_T("Verification failed at sector: %d"), i);
+					strMessage.Format(_T("Verification failed at sector: %llu"), i);
 					ShowMessage((LPCTSTR)strMessage, MB_OK | MB_ICONERROR);
 					m_Status = STATUS_IDLE;
 					UIEnable(IDCANCEL, FALSE);
@@ -819,7 +823,7 @@ LRESULT CMainDlg::OnVerifyOnlyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 				if (result)
 				{
 					CString strMessage;
-					strMessage.Format(_T("Verification failed at sector: %d"), i);
+					strMessage.Format(_T("Verification failed at sector: %llu"), i);
 					ShowMessage((LPCTSTR)strMessage, MB_OK | MB_ICONERROR);
 					passfail = false;
 					break;
@@ -834,7 +838,7 @@ LRESULT CMainDlg::OnVerifyOnlyClicked(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 				}
 				SectorData.clear();
 				DiskData.clear();
-				m_wndProgress.SetPos(i);
+				m_wndProgress.SetPos(nSectors ? (int)(i * 10000ull / nSectors) : 0);
 				HandleMessages();
 			}
 			SectorData.clear();
@@ -878,6 +882,7 @@ void CMainDlg::GetLogicalDrives()
 	// GetLogicalDrives returns 0 on failure, or a bitmask representing
 	// the drives available on the system (bit 0 = A:, bit 1 = B:, etc)
 	DWORD driveMask = ::GetLogicalDrives();
+	LOG("GetLogicalDrives: mask=0x%08X", driveMask);
 	int i = 0;
 	ULONG pID;
 
@@ -897,9 +902,12 @@ void CMainDlg::GetLogicalDrives()
 				if (volume.Open(m_hWnd, lpszDriveName[4], GENERIC_READ))
 				{
 					DWORD nDeviceNumber = volume.GetDeviceID();
-					CDiskInfo* pDiskInfo = FindDiskInfo(nDeviceNumber);
-					if (pDiskInfo)
-						pDiskInfo->m_Volumes.push_back(lpszDriveName[4]);
+					if (nDeviceNumber != (DWORD)-1)
+					{
+						CDiskInfo* pDiskInfo = FindDiskInfo(nDeviceNumber);
+						if (pDiskInfo)
+							pDiskInfo->m_Volumes.push_back(lpszDriveName[4]);
+					}
 				}
 				//int nIndex = m_wndDevice.AddString(szDeviceLabel);
 				//m_wndDevice.SetItemData(nIndex, (DWORD_PTR)MAKELONG(DEVICE_DRIVE, lpszDriveName[4]));
@@ -922,8 +930,10 @@ CDiskInfo* CMainDlg::FindDiskInfo(DWORD nDeviceNumber)
 
 void CMainDlg::GetPhysicalDisks()
 {
+	LOG("GetPhysicalDisks: scanning...");
 	m_Disks.clear();
 	ScanDiskDevices(m_Disks);
+	LOG("GetPhysicalDisks: found %zu disk(s)", m_Disks.size());
 }
 
 void CMainDlg::RefreshPhysicalDisks()
@@ -962,11 +972,6 @@ void CMainDlg::InitDeviceList()
 	m_wndDevice.ResetContent();
 	for (const CDiskInfo& disk : m_Disks)
 	{
-		//LPTSTR lpszPath = new TCHAR[32];
-		//lpszPath[0] == DEVICE_DISK;
-		//wsprintf(lpszPath+1, _T("\\\\?\\PhysicalDrive%d"), disk.m_nDeviceNumber);
-		//int nIndex = m_wndDevice.AddString(disk.m_strFriendlyName);
-		//m_wndDevice.SetItemData(nIndex, (DWORD_PTR)MAKELONG(DEVICE_DISK, disk.m_nDeviceNumber));
 		m_wndDevice.AddItem(disk.m_strFriendlyName, 0, 0, 0, MAKELPARAM(DEVICE_DISK, disk.m_nDeviceNumber));
 		TCHAR szDeviceLabel[8] = _T("[A:\\]");
 		for (TCHAR nVolume : disk.m_Volumes)
@@ -1012,10 +1017,20 @@ void CMainDlg::LoadSettings()
 	CRegKey key;
 	if (key.Open(HKEY_CURRENT_USER, _T("Software\\Win32DiskImager\\Settings")) == ERROR_SUCCESS)
 	{
-		LPTSTR lpszText = m_strHomeDir.GetBuffer(MAX_PATH);
-		DWORD dwText=0;
-		key.QueryStringValue(_T("ImageDir"), lpszText, &dwText);
-		m_strHomeDir.ReleaseBuffer(dwText);
+		DWORD dwText = 0;
+		// First call to get required buffer size
+		if (key.QueryStringValue(_T("ImageDir"), NULL, &dwText) == ERROR_SUCCESS && dwText > 0)
+		{
+			LPTSTR lpszText = m_strHomeDir.GetBuffer(dwText);
+			if (key.QueryStringValue(_T("ImageDir"), lpszText, &dwText) == ERROR_SUCCESS)
+			{
+				m_strHomeDir.ReleaseBuffer();
+			}
+			else
+			{
+				m_strHomeDir.ReleaseBuffer(0);
+			}
+		}
 	}
 }
 
@@ -1107,6 +1122,7 @@ static char FirstDriveFromMask(ULONG unitmask)
 
 LRESULT CMainDlg::OnDeviceChange(UINT uEvent, DWORD dwEventData)
 {
+	LOG("OnDeviceChange: uEvent=0x%X", uEvent);
 	PDEV_BROADCAST_HDR lpdb = (PDEV_BROADCAST_HDR)dwEventData;
 	switch (uEvent)
 	{
@@ -1117,7 +1133,7 @@ LRESULT CMainDlg::OnDeviceChange(UINT uEvent, DWORD dwEventData)
 		if (lpdb->dbch_devicetype == DBT_DEVTYP_VOLUME)
 		{
 			PDEV_BROADCAST_VOLUME lpdbv = (PDEV_BROADCAST_VOLUME)lpdb;
-			if (DBTF_NET)
+			if (!(lpdbv->dbcv_flags & DBTF_NET))
 			{
 				char nDrive = FirstDriveFromMask(lpdbv->dbcv_unitmask);
 				// add device to combo box (after sanity check that
@@ -1130,7 +1146,7 @@ LRESULT CMainDlg::OnDeviceChange(UINT uEvent, DWORD dwEventData)
 		if (lpdb->dbch_devicetype == DBT_DEVTYP_VOLUME)
 		{
 			PDEV_BROADCAST_VOLUME lpdbv = (PDEV_BROADCAST_VOLUME)lpdb;
-			if (DBTF_NET)
+			if (!(lpdbv->dbcv_flags & DBTF_NET))
 			{
 				char nDrive = FirstDriveFromMask(lpdbv->dbcv_unitmask);
 				//  find the device that was removed in the combo box,
@@ -1197,7 +1213,8 @@ bool CMainDlg::IsSameDrive(TCHAR nVolume)
 		else if (nDeviceType == DEVICE_DISK)
 		{
 			CDiskInfo* pDiskInfo = FindDiskInfo(HIWORD(dwDrive));
-			return find(pDiskInfo->m_Volumes.begin(), pDiskInfo->m_Volumes.end(), nVolume) != pDiskInfo->m_Volumes.end();
+			if (pDiskInfo)
+				return find(pDiskInfo->m_Volumes.begin(), pDiskInfo->m_Volumes.end(), nVolume) != pDiskInfo->m_Volumes.end();
 		}
 	}
 	return false;
@@ -1212,7 +1229,7 @@ CString CMainDlg::GetFullFilePath() const
 	return strFullPath;
 }
 
-bool CMainDlg::IsReatableFile() const
+bool CMainDlg::IsReadableFile() const
 {
 	CAtlFile file;
 	if (!PathFileExists(m_strImageFile))
@@ -1314,7 +1331,7 @@ void CMainDlg::UpdateElapsedTime(uint64_t position, uint64_t total)
 void CMainDlg::UpdateSpeed(double speed)
 {
 	CString strText;
-	strText.Format(_T("%fMB/s"), speed);
+	strText.Format(_T("%.1fMB/s"), speed);
 	m_wndStatusBar.SetPaneText(ID_DEFAULT_PANE, strText);
 	m_UpdateTimer.start();
 }
@@ -1371,6 +1388,8 @@ bool CMainDlg::HashFile(int hash_type, CString& strHashResult, LPCTSTR lpszFileN
 	DWORD hash_len = 512;
 	if (!CryptGetHashParam(hCryptHash, HP_HASHVAL, hash_data, &hash_len, 0))
 	{
+		CryptDestroyHash(hCryptHash);
+		CryptReleaseContext(hCryptProv, NULL);
 		return false;
 	}
 
@@ -1517,9 +1536,9 @@ LRESULT CMainDlg::OnImageFileKillFocus(WORD wNotifyCode, WORD wID, HWND hWndCtl)
 }
 
 template<typename T>
-static CString FormatCapicity(const T& value)
+static CString FormatCapacity(const T& value)
 {
-	CString strText;;
+	CString strText;
 	if (value.QuadPart >= 1024 * 1024 * 1024)
 	{
 		strText.Format(_T("%.2f GB"), (double)value.QuadPart / (1024 * 1024 * 1024));
@@ -1544,7 +1563,7 @@ void CMainDlg::GetImageFileSize(HANDLE hFile)
 	LARGE_INTEGER llSize;
 	if (GetFileSizeEx(hFile, &llSize))
 	{
-		CString strText = FormatCapicity(llSize);
+		CString strText = FormatCapacity(llSize);
 		SetDlgItemText(IDC_FILESIZE, strText);
 	}
 }
@@ -1562,7 +1581,7 @@ void CMainDlg::GetDeviceSize()
 			ULARGE_INTEGER llSize = ::GetDeviceSize(m_hWnd, dwDevice, device);
 			if (llSize.QuadPart > 0)
 			{
-				CString strText = FormatCapicity(llSize);
+				CString strText = FormatCapacity(llSize);
 				SetDlgItemText(IDC_DRIVESIZE, strText);
 			}
 		}

@@ -1,6 +1,7 @@
 //Microsoft Developer Studio generated resource script.
 //
 #include "resource.h"
+#include "version.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -74,7 +75,7 @@ CAPTION "About"
 FONT 8, "MS Shell Dlg"
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,130,81,50,14
-    CTEXT           "Win32DiskImager Application v1.0\n\n(c) Copyright 2019",
+    CTEXT           "Win32DiskImagerPlus v1.1.0\n\n(c) Copyright 2026",
                     IDC_STATIC,25,57,78,32
     ICON            IDR_MAINFRAME,IDC_STATIC,55,26,18,20
     GROUPBOX        "",IDC_STATIC,7,7,115,88
@@ -170,8 +171,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION VERSION_MAJOR,VERSION_MINOR,VERSION_PATCH,VERSION_BUILD
+ PRODUCTVERSION VERSION_MAJOR,VERSION_MINOR,VERSION_PATCH,VERSION_BUILD
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -189,14 +190,14 @@ BEGIN
             VALUE "Comments", "Image Writer for Windows to write USB and SD images\0"
             VALUE "CompanyName", "\0"
             VALUE "FileDescription", "DiskImager\0"
-            VALUE "FileVersion", "1.1.0\0"
+            VALUE "FileVersion", VERSION_STR "\0"
             VALUE "InternalName", "win32-image-writer\0"
-            VALUE "LegalCopyright", "Copyright (C) 2009-2017 Windows ImageWriter Team\0"
+            VALUE "LegalCopyright", "Copyright (C) 2009-2026 Windows ImageWriter Team\0"
             VALUE "LegalTrademarks", "\0"
             VALUE "OriginalFilename", "Win32DiskImager\0"
             VALUE "PrivateBuild", "\0"
             VALUE "ProductName", "Win32 Image Writer\0"
-            VALUE "ProductVersion", "1.1.0\0"
+            VALUE "ProductVersion", VERSION_STR "\0"
             VALUE "SpecialBuild", "\0"
         END
     END
